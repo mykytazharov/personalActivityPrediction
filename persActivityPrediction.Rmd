@@ -1,0 +1,120 @@
+---
+title: "Prediction of personal activity in R"
+author: "Mykyta Zharov"
+date: "11/30/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Overview
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is possible to collect data about personal activity.  People regularly quantify how much of a particular activity they do, but they rarely quantify how well they do it. 6 participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways.  In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell in order to predict the manner in which the participants did the exercise, using a "caret" package in R. The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har.
+
+* The training data for this project are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+* The test data are available here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+Let us start by loading the data. Notice that we are specifying what values should be interpreted as NA's.
+```{r}
+trainData <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"), na.strings=c("NA","#DIV/0!",""))
+testData <- read.csv(url("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"), na.strings=c("NA","#DIV/0!",""))
+```
+
+## Data cleaning
+
+We want firstly to investigate our train data set. 
+
+```{r}
+dim(trainData)
+```
+There are 160 variables in the train data set. Our goal is to predict "classe" variable using the other variables. We start with cleaning and preparing our train and test data sets for the analysis. Firslty, after observing the column names, we will delete first 7 columns, since they are uninformative for the prediction. Secondly, let us delete columns with missing values (NA's), so that a model can be estimated.
+```{r}
+trainDataCleaned <- trainData[,8:length(colnames(trainData))]
+testDataCleaned <- testData[,8:length(colnames(testData))]
+```
+```{r}
+trainDataCleaned2 <- trainDataCleaned[, colSums(is.na(trainDataCleaned)) == 0] 
+testDataCleaned2 <- testDataCleaned[, (colnames(testDataCleaned) %in% colnames(trainDataCleaned2)) == TRUE] 
+```
+This results in the following:
+```{r}
+str(trainDataCleaned2)
+```
+
+Now we are ready to build and train predictive models using a cleaned train data set. 
+
+## Building predictive models 
+
+We are going to train 2 different predictive models (random forest, stochastic gradient boosting), compare them by accuracy and then try building a stacked model out of them. 
+
+### Test data set splitting
+
+We devide the train data set into a train data set and validation data set, so than we than can evaluate the performance of the methods on the unseen data before applying the model on the test data set.
+```{r}
+library(caret)
+in.training <- createDataPartition(trainDataCleaned2$classe, p=0.70, list=F)
+trainSet <- trainDataCleaned2[in.training, ]
+validateSet <- trainDataCleaned2[-in.training, ]
+```
+
+### Model training 
+
+We train each model using a 5-fold cross-validation. In other words, train data set is randomly partitioned into 10 equal sized sub-sets. A single sample is left for validation and the other sub-samples are used as training data. This process is repeated 5 times and the results from the folds are then averaged.
+
+```{r}
+set.seed(123)
+control.params <- trainControl(method="cv", 5)
+#random forest
+mod_rf <- train(classe ~ ., data = trainSet, method = "rf", trControl=control.params, ntree = 100)
+#stochastic gradient boosting
+mod_gbm <- train(classe ~ ., data = trainSet, method = "gbm", trControl=control.params, verbose = FALSE)
+```
+
+Now let us compare the performance of the trained models when using cross-validation for training.
+```{r}
+results <- resamples(list(RF=mod_rf,  GBM=mod_gbm))
+summary(results)
+# boxplots of results
+bwplot(results)
+# dot plots of results
+dotplot(results)
+```
+
+From the the above output we observe that the Random Forest predictive model outperforms the Stochastic Gradient Boosting models when cross-validation is used for training.  RF and GBM models have both quite high accuracy greater than 95%. Howewer, we would also like to expect the accuracy of the models on the unseen validation test to quantify an out-of-samle error.
+
+### Model accuracy and out-of-samle error
+
+Now, we are going to compare the 2 models on the unseen validation set.
+```{r}
+rf.predict <- predict(mod_rf, validateSet)
+gbm.predict <- predict(mod_gbm, validateSet)
+
+confusionMatrix(validateSet$classe, rf.predict)
+confusionMatrix(validateSet$classe, gbm.predict)
+```
+
+From the above output we see that the Random Forest model is still the best candidate to choose for the classification task, obtaining the accuracy of 99,35%. 
+
+Finally we want to build a stacked model out of 2 predictive models used above, and check if we obtain a better accuracy than using each model separately. 
+
+```{r}
+predDF <- data.frame(rf.predict,  gbm.predict, classe = validateSet$classe)
+combModFit <- train(classe ~ ., method = "rf", data = predDF, ntree=100)
+combPred <- predict(combModFit, predDF)
+confusionMatrix(validateSet$classe, combPred)
+```
+
+From above we see that building a stacked model results in slightly better accuracy, than using RF model separately, of 99,3%. The Overall Out-of-Sample error is 0.007.
+
+## Applying final model on the test data set
+
+Since we do not gain much in accuracy, using stacked model, in comparison to the Random Forest model, we choose to continue with RF model. Now we apply RF model on the test data set.
+
+```{r}
+results <- predict(mod_rf, newdata=testDataCleaned2)
+results
+```
+Above we can observe the classification results for the test data set.
